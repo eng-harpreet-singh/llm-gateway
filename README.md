@@ -1,4 +1,3 @@
-cat > README.md << 'EOF'
 # llm-gateway
 
 A high-performance, multi-provider LLM gateway written in Go.
