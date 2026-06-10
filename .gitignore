@@ -1,7 +1,5 @@
-cat > .gitignore << 'EOF'
 # Binaries
 /bin/
-gateway
 *.exe
 
 # Env / secrets
