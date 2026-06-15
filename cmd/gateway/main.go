@@ -33,8 +33,9 @@ func run(logger *slog.Logger) error {
 
 	// today: just OpenAI. tomorrow: one more line for Anthropic + one new file.
 	openai := provider.NewOpenAIProvider(cfg.OpenAIAPIKey, cfg.OpenAIBaseURL)
+	anthropic := provider.NewAnthropicProvider(cfg.AnthropicAPIKey, cfg.AnthropicBaseURL)
 
-	rtr, err := router.New(openai)
+	rtr, err := router.New(openai, anthropic)
 	if err != nil {
 		return err
 	}

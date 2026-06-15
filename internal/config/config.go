@@ -11,6 +11,8 @@ type Config struct {
 	Port            string
 	OpenAIAPIKey    string
 	OpenAIBaseURL   string
+	AnthropicAPIKey  string
+	AnthropicBaseURL string
 	DefaultModel    string
 	RequestTimeout  time.Duration
 	ShutdownTimeout time.Duration
@@ -22,6 +24,8 @@ func Load() (Config, error) {
 		Port:            getEnv("PORT", "8080"),
 		OpenAIAPIKey:    os.Getenv("OPENAI_API_KEY"),
 		OpenAIBaseURL:   getEnv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+		AnthropicAPIKey:  os.Getenv("ANTHROPIC_API_KEY"),
+		AnthropicBaseURL: getEnv("ANTHROPIC_BASE_URL", "https://api.anthropic.com"),
 		DefaultModel:    getEnv("DEFAULT_MODEL", "gpt-4o-mini"),
 		RequestTimeout:  getDuration("REQUEST_TIMEOUT", 30*time.Second),
 		ShutdownTimeout: getDuration("SHUTDOWN_TIMEOUT", 10*time.Second),
