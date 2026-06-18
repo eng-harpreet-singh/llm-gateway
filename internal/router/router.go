@@ -2,14 +2,14 @@ package router
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/eng-harpreet-singh/llm-gateway/internal/provider"
 )
 
-// Router picks which Provider handles a request. Trivial today (single
-// provider), but it's the seam where smart routing lands later.
+// Router picks which Provider handles a request, based on the model name.
 type Router struct {
-	providers map[string]provider.Provider
+	providers map[string]provider.Provider // keyed by provider name
 	defaultP  provider.Provider
 }
 
@@ -25,10 +25,23 @@ func New(providers ...provider.Provider) (*Router, error) {
 	return &Router{providers: m, defaultP: providers[0]}, nil
 }
 
-// Route returns the Provider for a request. Future: pick by complexity/cost/tenant.
+// Route picks a Provider from the model name. Future: complexity/cost/tenant.
 func (r *Router) Route(req provider.Request) provider.Provider {
-	if p, ok := r.providers[req.Model]; ok {
+	name := providerNameForModel(req.Model)
+	if p, ok := r.providers[name]; ok {
 		return p
 	}
 	return r.defaultP
+}
+
+// providerNameForModel maps a model name to the provider that serves it.
+func providerNameForModel(model string) string {
+	switch {
+	case strings.HasPrefix(model, "gpt"), strings.HasPrefix(model, "o1"), strings.HasPrefix(model, "o3"):
+		return "openai"
+	case strings.HasPrefix(model, "claude"):
+		return "anthropic"
+	default:
+		return "" // unknown → no match → falls back to default in Route
+	}
 }
