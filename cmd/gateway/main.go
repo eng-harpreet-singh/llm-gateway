@@ -46,8 +46,9 @@ func run(logger *slog.Logger) error {
 	// changes when we add more.
 	openai := provider.NewOpenAIProvider(cfg.OpenAIAPIKey, cfg.OpenAIBaseURL)
 	anthropic := provider.NewAnthropicProvider(cfg.AnthropicAPIKey, cfg.AnthropicBaseURL)
+	ollama := provider.NewOllamaProvider(cfg.OllamaBaseURL)
 
-	rtr, err := router.New(openai, anthropic)
+	rtr, err := router.New(openai, anthropic, ollama)
 	if err != nil {
 		return err
 	}

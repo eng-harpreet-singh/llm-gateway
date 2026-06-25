@@ -27,6 +27,7 @@ type Config struct {
 	Port             string
 	OpenAIAPIKey     string
 	OpenAIBaseURL    string
+	OllamaBaseURL string
 	AnthropicAPIKey  string
 	AnthropicBaseURL string
 	DefaultModel     string
@@ -47,6 +48,7 @@ func Load() (Config, error) {
 		DefaultModel:     getEnv("DEFAULT_MODEL", "gpt-4o-mini"),
 		RequestTimeout:   getDuration("REQUEST_TIMEOUT", 30*time.Second),
 		ShutdownTimeout:  getDuration("SHUTDOWN_TIMEOUT", 10*time.Second),
+		OllamaBaseURL: getEnv("OLLAMA_BASE_URL", "http://localhost:11434"),
 	}
 	if cfg.OpenAIAPIKey == "" {
 		return Config{}, fmt.Errorf("config: OPENAI_API_KEY is required")
