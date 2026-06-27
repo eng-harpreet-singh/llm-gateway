@@ -1,10 +1,9 @@
 // Command gateway is the entry point and composition root for the LLM gateway.
 //
-// main does exactly one job well: it is the ONLY place that knows how the
-// pieces fit together. It loads config, constructs concrete dependencies, wires
-// them, and starts the server. Everything below main depends on interfaces, not
-// on each other's construction — which is what keeps the system testable and
-// the dependency graph a tree, not a web.
+// main does one job: it is the ONLY place that knows how the pieces fit
+// together. It loads config, builds concrete dependencies, wires them, and
+// starts the server. Everything below main depends on interfaces, not on each
+// other's construction — keeping the system testable and the graph a tree.
 package main
 
 import (
@@ -22,8 +21,8 @@ import (
 )
 
 func main() {
-	// Structured logging (slog, stdlib since 1.21). JSON handler so logs are
-	// machine-parseable for the observability stack we add later.
+	// Structured JSON logging so logs are machine-parseable for the
+	// observability stack we add later.
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	}))
@@ -34,16 +33,16 @@ func main() {
 	}
 }
 
-// run holds the real logic so it can return an error (main can't). This pattern
-// — thin main, fallible run — keeps the exit-code path in one obvious place.
+// run holds the real logic so it can return an error (main can't).
+// Thin main, fallible run — keeps the exit-code path in one place.
 func run(logger *slog.Logger) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return err
 	}
 
-	// Construct concrete providers. Each is one line + one file; nothing else
-	// changes when we add more.
+	// Build concrete providers. Each is one line and one file; adding a
+	// provider changes nothing else here.
 	openai := provider.NewOpenAIProvider(cfg.OpenAIAPIKey, cfg.OpenAIBaseURL)
 	anthropic := provider.NewAnthropicProvider(cfg.AnthropicAPIKey, cfg.AnthropicBaseURL)
 	ollama := provider.NewOllamaProvider(cfg.OllamaBaseURL)
@@ -53,25 +52,23 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
-	// Token counter for the advisory cost estimate. We use the OpenAI local
-	// counter (tiktoken, no network) so advising stays fast — exact-enough for
-	// a pre-flight estimate, and it never blocks on an API call.
+	// Local tokenizer (tiktoken, no network) for the advisory cost estimate,
+	// so advising stays fast and never blocks on an API call.
 	counter := token.NewOpenAICounter()
 
-	// Complexity scorer: tier decision from cheap signals (length + keywords).
-	// Threshold and signal words are wired here; move to config later if needed.
-	signalWords := []string{"analyze", "explain", "reason", "prove", "step by step", "evaluate", "compare"}
-	scorer := router.NewHeuristicScorer(1000, signalWords)
+	// Complexity scorer for tier selection. Threshold and signal words come
+	// from config now, not hardcoded here.
+	scorer := router.NewHeuristicScorer(cfg.ComplexityThreshold, cfg.SignalWords)
 
-	// Advisor ties scorer + counter + the model catalogue together to produce
-	// a cost/tier recommendation. Currency is display-only arithmetic.
-	advisor := router.NewAdvisor(scorer, counter, cfg.Models, "USD")
+	// Advisor ties scorer + counter + catalogue into a cost/tier recommendation.
+	// Currency is display-only arithmetic.
+	advisor := router.NewAdvisor(scorer, counter, cfg.Models, cfg.Currency)
 
 	handler := server.NewHandler(rtr, advisor, logger, cfg.DefaultModel)
 	srv := server.New(":"+cfg.Port, handler.Routes(), logger, cfg.ShutdownTimeout)
 
-	// signal.NotifyContext gives us a context that cancels on SIGINT/SIGTERM —
-	// the idiomatic modern way to wire OS signals to graceful shutdown.
+	// signal.NotifyContext cancels the context on SIGINT/SIGTERM — the modern
+	// way to wire OS signals to graceful shutdown.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 

@@ -1,3 +1,5 @@
+// Package server holds the HTTP layer: it decodes requests, routes them to a
+// provider (or the advisor), and maps results and typed errors to responses.
 package server
 
 import (
@@ -5,12 +7,14 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"	
 
 	"github.com/eng-harpreet-singh/llm-gateway/internal/provider"
 	"github.com/eng-harpreet-singh/llm-gateway/internal/router"
 )
 
-// Handler holds injected deps so it's testable (no globals).
+/// Handler is the HTTP entry point. It decodes requests, delegates provider
+// selection to the router, and maps results and typed errors to responses.
 type Handler struct {
 	router       *router.Router
 	advisor      *router.Advisor
@@ -58,6 +62,8 @@ func (h *Handler) messages(w http.ResponseWriter, r *http.Request) {
 		model = h.defaultModel
 	}
 
+	model = strings.ToLower(strings.TrimSpace(model)) // clean once, used for routing and the upstream call
+
 	req := provider.Request{
 		Model:       model,
 		Messages:    body.Messages,
@@ -65,8 +71,20 @@ func (h *Handler) messages(w http.ResponseWriter, r *http.Request) {
 		Temperature: body.Temperature,
 	}
 
+	// Unknown/unregistered model is a client error (they asked for a model we
+	// don't serve), so return 400 rather than silently routing elsewhere.
+	p, err := h.router.Route(req)
+	if err != nil {
+		if errors.Is(err, router.ErrNoProvider) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		h.logger.Error("routing failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
 	// pass r.Context() so client disconnect/deadline cancels the upstream call
-	p := h.router.Route(req)
 	resp, err := p.Complete(r.Context(), req)
 	if err != nil {
 		h.handleProviderError(w, err)

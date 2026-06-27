@@ -44,7 +44,7 @@ func NewAnthropicProvider(apiKey, baseURL string, opts ...AnthropicOption) *Anth
 	return p
 }
 
-func (p *AnthropicProvider) Name() string { return "anthropic" }
+func (p *AnthropicProvider) Name() string { return NameAnthropic }
 
 // ---- Anthropic wire DTOs (private to this file) ----
 

@@ -48,7 +48,7 @@ func WithOllamaHTTPClient(c *http.Client) OllamaOption {
 	return func(p *OllamaProvider) { p.client = c }
 }
 
-func (p *OllamaProvider) Name() string { return "ollama" }
+func (p *OllamaProvider) Name() string { return NameOllama }
 
 // Request and response types for Ollama's /api/chat endpoint.
 // Kept private so they don't leak into the gateway's neutral model.

@@ -101,11 +101,20 @@ func (a *Advisor) Advise(ctx context.Context, req provider.Request) (Advice, err
 	}, nil
 }
 
+// localTier marks models that run on this machine (Ollama). They appear as
+// options with zero API cost, but we never auto-recommend them: local models
+// are less capable, so the user should choose local deliberately.
+const localTier = "local"
+
 // pickRecommended chooses, within the recommended tier, the cheapest model.
-// Falls back to the first option if (unexpectedly) nothing matches the tier.
+// Local-tier models are skipped here — they show as options but are never the
+// auto-recommendation. Falls back to the first non-local option if needed.
 func (a *Advisor) pickRecommended(rec Recommendation, options []Option) Advised {
 	var best *Option
 	for i := range options {
+		if options[i].Tier == localTier {
+			continue // local is an option, never the recommendation
+		}
 		if options[i].Tier != string(rec.Tier) {
 			continue
 		}
@@ -113,8 +122,18 @@ func (a *Advisor) pickRecommended(rec Recommendation, options []Option) Advised 
 			best = &options[i]
 		}
 	}
-	if best == nil && len(options) > 0 {
-		best = &options[0] // safety net: never recommend nothing
+
+	// safety net: if the recommended tier matched nothing, pick the cheapest
+	// non-local option, so we never recommend the local model by accident.
+	if best == nil {
+		for i := range options {
+			if options[i].Tier == localTier {
+				continue
+			}
+			if best == nil || options[i].InputCost < best.InputCost {
+				best = &options[i]
+			}
+		}
 	}
 
 	return Advised{

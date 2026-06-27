@@ -1,0 +1,38 @@
+[
+  { "name": "baseline_latency_openai",       "model": "gpt-4o-mini",       "content": "Reply with the single word: pong." },
+  { "name": "baseline_latency_anthropic",    "model": "claude-haiku-4-5",  "content": "Reply with the single word: pong." },
+
+  { "name": "openai_fact_short",             "model": "gpt-4o-mini",       "content": "In one sentence, what is idempotency in REST APIs?" },
+  { "name": "anthropic_fact_short",          "model": "claude-haiku-4-5",  "content": "In one sentence, what is a database index?" },
+  { "name": "ollama_fact_short",             "model": "llama3.2",          "content": "In one sentence, what is a hash map?" },
+
+  { "name": "openai_medium_summary",         "model": "gpt-4o-mini",       "content": "Summarise in three lines what an API gateway does and why teams use one." },
+  { "name": "anthropic_medium_translate",    "model": "claude-haiku-4-5",  "content": "Translate the following into Hindi and Punjabi, keeping a polite tone: 'Thank you for your help, I really appreciate it.'" },
+  { "name": "ollama_medium_explain",         "model": "llama3.2",          "content": "Explain in three short bullet points the difference between TCP and UDP." },
+
+  { "name": "openai_complex_reasoning",      "model": "gpt-4o",            "content": "Reason step by step about why distributed systems often prefer eventual consistency over strong consistency. Cover the CAP theorem trade-off, give one real-world example where eventual consistency is acceptable, and one where it is not." },
+  { "name": "anthropic_complex_evaluate",    "model": "claude-sonnet-4-5", "content": "Evaluate the trade-offs between a monolith and microservices for a 5-person engineering team building a payments product. Consider deployment, debugging, team cognitive load, and operational cost. End with a clear recommendation and the main risk of that choice." },
+  { "name": "openai_complex_design",         "model": "gpt-4o",            "content": "Analyze and compare SQL versus NoSQL for storing financial transaction records that require a full audit trail. Discuss data integrity, query patterns, and consistency. Recommend one and justify it." },
+
+  { "name": "structured_essay_scorer",       "model": "gpt-4o",            "content": "You are a strict senior English teacher.\n\nContext: You grade short essays for grammar, structure, and clarity only. You never comment on the topic itself.\n\nExamples:\nEssay: 'Me and him goes to school.' -> Score: 2/5. Reason: subject-verb agreement and pronoun errors.\nEssay: 'The committee reviewed the proposal carefully and approved it.' -> Score: 5/5. Reason: correct grammar, clear structure.\n\nNow grade this essay and reply ONLY in the format 'Score: X/5. Reason: ...':\nEssay: 'Although the team were tired, they finishes the project on time and everyone were happy.'" },
+
+  { "name": "structured_support_router",     "model": "claude-sonnet-4-5", "content": "You are a support ticket classifier for a SaaS company.\n\nContext: Classify each ticket into exactly one category: BILLING, TECHNICAL, or ACCOUNT.\n\nExamples:\n'My card was charged twice this month' -> BILLING\n'The app crashes when I upload a file' -> TECHNICAL\n'I want to change my registered email' -> ACCOUNT\n\nNow classify this ticket and reply with ONLY the category word:\n'I was billed for the pro plan but I am still on the free tier features.'" },
+
+  { "name": "structured_extraction_json",    "model": "gpt-4o",            "content": "You are a data extraction service.\n\nContext: Extract structured fields from messy text. If a field is missing, use null.\n\nExample:\nText: 'Call from Ramesh, number 98765, about invoice 4471.' -> {\"name\":\"Ramesh\",\"phone\":\"98765\",\"invoice\":\"4471\"}\n\nNow extract from this text and reply ONLY with valid JSON in the same shape:\nText: 'Spoke to Harpreet regarding order 8890, will follow up next week.'" },
+
+  { "name": "structured_few_shot_sentiment", "model": "claude-haiku-4-5",  "content": "You classify customer feedback sentiment.\n\nExamples:\n'The delivery was fast and the product is great' -> POSITIVE\n'It arrived broken and support ignored me' -> NEGATIVE\n'It is okay, nothing special' -> NEUTRAL\n\nClassify this and reply with ONLY one word (POSITIVE, NEGATIVE, or NEUTRAL):\n'The setup took a while but it works well now and I am satisfied.'" },
+
+  { "name": "coding_go_function",            "model": "gpt-4o",            "content": "Write an idiomatic Go function named MergeSortedSlices that takes two already-sorted []int slices and returns a single sorted []int containing all elements. Include a short comment explaining the approach. Do not use sort.Sort; merge them in one pass." },
+  { "name": "coding_go_concurrency",         "model": "gpt-4o",            "content": "Write a Go worker pool: a function that takes a slice of jobs and a worker count, processes the jobs concurrently using goroutines and a channel, and returns the results. Keep it idiomatic and add brief comments." },
+  { "name": "coding_python_dedup",           "model": "gpt-4o-mini",       "content": "Write a Python function that removes duplicate dictionaries from a list, where two dictionaries are considered duplicates if their 'id' key matches. Preserve the original order. Add a short docstring." },
+  { "name": "coding_sql_query",              "model": "claude-sonnet-4-5", "content": "Write a SQL query for a payments database. Tables: accounts(id, name) and transactions(id, account_id, amount, created_at). Return the top 5 accounts by total transaction amount in the last 30 days, with account name and total. Explain the query in two lines." },
+  { "name": "coding_debug_explain",          "model": "claude-sonnet-4-5", "content": "This Go code has a concurrency bug:\n\nfor i := 0; i < 5; i++ {\n  go func() { fmt.Println(i) }()\n}\n\nExplain the bug in two lines and give the corrected version." },
+  { "name": "coding_ollama_snippet",         "model": "llama3.2",          "content": "Write a short Go function that reverses a string. Keep it under 10 lines." },
+
+  { "name": "rag_grounded_answer",           "model": "gpt-4o",            "content": "You answer ONLY from the context provided. If the answer is not in the context, say 'Not found in context.'\n\nContext: 'The gateway uses tiktoken locally to count OpenAI tokens, and calls the Anthropic API to count Claude tokens. Ollama runs locally and needs no API key.'\n\nQuestion: How does the gateway count tokens for Claude, and does Ollama need an API key?" },
+
+  { "name": "long_context_summary",          "model": "claude-sonnet-4-5", "content": "Summarise the following into exactly three bullet points, each under fifteen words:\n\nByte-pair encoding starts from raw bytes and repeatedly merges the most frequent pair into a single token. Each provider ships its own tokenizer with its own vocabulary, so the same text produces different token counts on different models. OpenAI open-sources tiktoken so you can count locally. Anthropic keeps Claude's tokenizer proprietary, so you must call their API to count. Because tokenizers differ, you cannot assume one provider's token count transfers to another, which matters for cost estimation." },
+
+  { "name": "edge_case_sensitivity",         "model": "GPT-4o-mini",       "content": "Reply with one short line confirming you received this. (tests case-insensitive routing)" },
+  { "name": "edge_whitespace_model",         "model": " claude-haiku-4-5 ","content": "Reply with one short line confirming you received this. (tests trimmed model name)" }
+]

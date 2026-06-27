@@ -15,6 +15,13 @@ const (
 	RoleAssistant Role = "assistant"
 )
 
+//provider names
+const (
+	NameOpenAI    = "openai"
+	NameAnthropic = "anthropic"
+	NameOllama    = "ollama"
+)
+
 // Message is one turn in a conversation, normalized across providers.
 type Message struct {
 	Role Role `json:"role"`

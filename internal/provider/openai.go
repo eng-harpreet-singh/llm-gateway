@@ -54,7 +54,7 @@ func NewOpenAIProvider(apiKey, baseURL string, opts ...OpenAIOption) *OpenAIProv
 	return p
 }
 
-func (p *OpenAIProvider) Name() string { return "openai" }
+func (p *OpenAIProvider) Name() string { return NameOpenAI }
 
 // Private wire DTOs — OpenAI's shape never leaks past this file.
 type openAIMessage struct {
