@@ -2,6 +2,7 @@ package provider
 
 import (
 	"bytes"
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -163,4 +164,76 @@ func extractAnthropicError(raw []byte) string {
 		return ar.Error.Message
 	}
 	return string(raw)
+}
+
+// Stream runs a streaming completion against Anthropic. It sets stream:true,
+// then relays the raw SSE bytes as chunks (pass-through).
+func (p *AnthropicProvider) Stream(ctx context.Context, req Request) (<-chan StreamChunk, error) {
+	// Reuse the same request mapping, then flip on streaming.
+	ar := toAnthropicRequest(req)
+	payload := struct {
+		anthropicRequest
+		Stream bool `json:"stream"`
+	}{anthropicRequest: ar, Stream: true}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("anthropic: marshal stream request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(
+		ctx, http.MethodPost, p.baseURL+"/v1/messages", bytes.NewReader(body),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("anthropic: build stream request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("x-api-key", p.apiKey)
+	httpReq.Header.Set("anthropic-version", "2023-06-01")
+
+	resp, err := p.client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("anthropic: do stream request: %w: %v", ErrUpstreamUnavailable, err)
+	}
+
+	// Non-2xx: read the error body now (no stream to relay) and fail before
+	// we hand back a channel.
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
+		resp.Body.Close()
+		return nil, newAPIError(p.Name(), resp.StatusCode, extractAnthropicError(raw))
+	}
+
+	// Relay the SSE stream on a channel. The goroutine owns closing the body
+	// and the channel, so the caller just ranges until it closes.
+	out := make(chan StreamChunk)
+	go func() {
+		defer resp.Body.Close()
+		defer close(out)
+
+		reader := bufio.NewReader(resp.Body)
+		for {
+			line, err := reader.ReadBytes('\n')
+			if len(line) > 0 {
+				// forward the raw SSE line; select lets ctx cancel unblock us
+				// if the client went away and nobody is reading.
+				select {
+				case out <- StreamChunk{Data: line}:
+				case <-ctx.Done():
+					return
+				}
+			}
+			if err != nil {
+				if err != io.EOF {
+					select {
+					case out <- StreamChunk{Err: err}:
+					case <-ctx.Done():
+					}
+				}
+				return // EOF or error: stream is done
+			}
+		}
+	}()
+
+	return out, nil
 }

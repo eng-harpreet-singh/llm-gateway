@@ -50,6 +50,7 @@ type messagesRequest struct {
 	Messages    []provider.Message `json:"messages"`
 	MaxTokens   int                `json:"max_tokens"`
 	Temperature float64            `json:"temperature"`
+	Stream      bool               `json:"stream"` // when true, respond with SSE
 }
 
 func (h *Handler) messages(w http.ResponseWriter, r *http.Request) {
@@ -97,6 +98,13 @@ func (h *Handler) messages(w http.ResponseWriter, r *http.Request) {
 	if d := h.limiter.Check(r.Context(), tenant, inputTokens); !d.Allowed {
 		w.Header().Set("Retry-After", strconv.Itoa(int(d.RetryAfter.Seconds())+1))
 		writeError(w, http.StatusTooManyRequests, d.Reason)
+		return
+	}
+
+	// Streaming path: if the caller asked for SSE, resolve the provider, check
+	// it supports streaming, and relay chunks. Non-streaming falls through.
+	if body.Stream {
+		h.streamMessages(w, r, req, tenant)
 		return
 	}
 
@@ -185,4 +193,69 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+// streamMessages handles the SSE path. It routes to a provider, checks that
+// provider supports streaming, and relays chunks to the client, flushing each
+// one so tokens appear as they arrive.
+func (h *Handler) streamMessages(w http.ResponseWriter, r *http.Request, req provider.Request, tenant string) {
+	// Resolve the provider (same routing as non-streaming).
+	p, err := h.router.Route(req)
+	if err != nil {
+		if errors.Is(err, router.ErrNoProvider) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		h.logger.Error("routing failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	// Not every provider streams. If this one doesn't, say so clearly rather
+	// than silently falling back to a buffered response.
+	streamer, ok := p.(provider.Streamer)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "streaming not supported for this model")
+		return
+	}
+
+	// We need http.Flusher to push each chunk immediately. If the writer can't
+	// flush, streaming is impossible on this connection.
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming unsupported")
+		return
+	}
+
+	// Start the upstream stream before writing headers, so an upstream error
+	// still lets us return a normal error status.
+	chunks, err := streamer.Stream(r.Context(), req)
+	if err != nil {
+		h.handleProviderError(w, err)
+		return
+	}
+
+	// SSE response headers. Once these are set and flushed, the status is
+	// committed — any later error can only end the stream, not change status.
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	// Relay each chunk and flush immediately so the client sees tokens live.
+	for chunk := range chunks {
+		if chunk.Err != nil {
+			h.logger.Error("stream error", "error", chunk.Err)
+			return // mid-stream failure: stop; status already sent
+		}
+		if _, err := w.Write(chunk.Data); err != nil {
+			h.logger.Warn("client write failed, ending stream", "error", err)
+			return // client went away
+		}
+		flusher.Flush()
+	}
+	// Note: TPM Record is skipped in v1 streaming — token usage comes in the
+	// final SSE event, which pass-through doesn't parse yet. Reconcile when we
+	// add event translation.
 }

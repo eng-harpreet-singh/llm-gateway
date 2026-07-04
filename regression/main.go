@@ -108,8 +108,12 @@ func runOne(client *http.Client, baseURL string, p prompt) result {
 		Messages: []message{{Role: "user", Content: p.Content}},
 	})
 
+	req, _ := http.NewRequest(http.MethodPost, baseURL+"/v1/messages", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Tenant-ID", "regression") // gateway requires a tenant
+
 	start := time.Now()
-	resp, err := client.Post(baseURL+"/v1/messages", "application/json", bytes.NewReader(body))
+	resp, err := client.Do(req)
 	latency := time.Since(start)
 
 	if err != nil {

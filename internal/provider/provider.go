@@ -54,6 +54,11 @@ type Response struct {
 	Usage Usage `json:"usage"`
 }
 
+type StreamChunk struct {
+	Data []byte // raw SSE event bytes to forward to the client
+	Err  error  // non-nil means the stream failed; the handler stops
+}
+
 // Provider is implemented by every backend.
 // Complete only, for now — streaming will be a separate interface so we don't
 // force it onto adapters that don't need it yet.
@@ -63,6 +68,13 @@ type Provider interface {
 	// Complete runs one non-streaming completion. Must honor ctx and return
 	// a typed error (errors.go) so callers can branch on failure class.
 	Complete(ctx context.Context, req Request) (Response, error)
+}
+
+type Streamer interface {
+	// Stream runs a streaming completion. It returns a channel of chunks the
+	// caller ranges over until it closes. Must honor ctx (client disconnect
+	// or deadline cancels the upstream stream).
+	Stream(ctx context.Context, req Request) (<-chan StreamChunk, error)
 }
 
 
