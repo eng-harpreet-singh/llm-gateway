@@ -13,8 +13,11 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/redis/go-redis/v9"
+
 	"github.com/eng-harpreet-singh/llm-gateway/internal/config"
 	"github.com/eng-harpreet-singh/llm-gateway/internal/provider"
+	"github.com/eng-harpreet-singh/llm-gateway/internal/ratelimit"
 	"github.com/eng-harpreet-singh/llm-gateway/internal/router"
 	"github.com/eng-harpreet-singh/llm-gateway/internal/server"
 	"github.com/eng-harpreet-singh/llm-gateway/internal/token"
@@ -41,8 +44,6 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
-	// Build concrete providers. Each is one line and one file; adding a
-	// provider changes nothing else here.
 	openai := provider.NewOpenAIProvider(cfg.OpenAIAPIKey, cfg.OpenAIBaseURL)
 	anthropic := provider.NewAnthropicProvider(cfg.AnthropicAPIKey, cfg.AnthropicBaseURL)
 	ollama := provider.NewOllamaProvider(cfg.OllamaBaseURL)
@@ -52,23 +53,22 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
-	// Local tokenizer (tiktoken, no network) for the advisory cost estimate,
-	// so advising stays fast and never blocks on an API call.
 	counter := token.NewOpenAICounter()
 
-	// Complexity scorer for tier selection. Threshold and signal words come
-	// from config now, not hardcoded here.
 	scorer := router.NewHeuristicScorer(cfg.ComplexityThreshold, cfg.SignalWords)
-
-	// Advisor ties scorer + counter + catalogue into a cost/tier recommendation.
-	// Currency is display-only arithmetic.
 	advisor := router.NewAdvisor(scorer, counter, cfg.Models, cfg.Currency)
 
-	handler := server.NewHandler(rtr, advisor, logger, cfg.DefaultModel)
+	// ---- NEW: Redis client + rate limiter ----
+	// Redis backs the per-tenant limiter. The limiter fails open, so a missing
+	// Redis logs and allows rather than crashing the gateway.
+	rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
+	limiter := ratelimit.New(rdb, logger, cfg.RPMLimit, cfg.TPMLimit)
+	// ------------------------------------------
+
+	// handler now takes the limiter + counter (counter is used for the TPM check)
+	handler := server.NewHandler(rtr, advisor, limiter, counter, logger, cfg.DefaultModel)
 	srv := server.New(":"+cfg.Port, handler.Routes(), logger, cfg.ShutdownTimeout)
 
-	// signal.NotifyContext cancels the context on SIGINT/SIGTERM — the modern
-	// way to wire OS signals to graceful shutdown.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 

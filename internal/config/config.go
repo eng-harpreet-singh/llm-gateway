@@ -16,6 +16,9 @@ import (
 const (
 	defaultComplexityThreshold = 1000
 	defaultCurrency            = "USD"
+	defaultRedisAddr = "localhost:6379"
+	defaultRPMLimit  = 60      // requests per minute per tenant
+	defaultTPMLimit  = 100_000 // tokens per minute per tenant
 )
 
 // defaultSignalWords push a prompt to the premium tier when matched.
@@ -47,6 +50,9 @@ type Config struct {
 	DefaultModel     string
 	RequestTimeout   time.Duration
 	ShutdownTimeout  time.Duration
+	RedisAddr string
+	RPMLimit  int
+	TPMLimit  int
 
 	// Scorer and advisory tuning.
 	ComplexityThreshold int
@@ -73,6 +79,10 @@ func Load() (Config, error) {
 		ComplexityThreshold: getInt("COMPLEXITY_THRESHOLD", defaultComplexityThreshold),
 		SignalWords:         defaultSignalWords,
 		Currency:            getEnv("CURRENCY", defaultCurrency),
+
+		RedisAddr: getEnv("REDIS_ADDR", defaultRedisAddr),
+		RPMLimit:  getInt("RPM_LIMIT", defaultRPMLimit),
+		TPMLimit:  getInt("TPM_LIMIT", defaultTPMLimit),
 	}
 
 	// OpenAI key is required because the local tokenizer and default model

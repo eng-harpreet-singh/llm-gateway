@@ -10,7 +10,7 @@ import "context"
 type Role string
 
 const (
-	RoleSystem Role = "syetem"
+	RoleSystem Role = "system"
 	RoleUser Role = "user"
 	RoleAssistant Role = "assistant"
 )
