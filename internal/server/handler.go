@@ -1,5 +1,6 @@
-// Package server holds the HTTP layer: it decodes requests, routes them to a
-// provider (or the advisor), and maps results and typed errors to responses.
+// Package server holds the HTTP layer: it decodes requests, enforces
+// per-tenant rate limits, routes them to a provider (or the advisor), records
+// cost, and maps results and typed errors to responses.
 package server
 
 import (
@@ -10,26 +11,47 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/eng-harpreet-singh/llm-gateway/internal/config"
+	"github.com/eng-harpreet-singh/llm-gateway/internal/ledger"
 	"github.com/eng-harpreet-singh/llm-gateway/internal/provider"
 	"github.com/eng-harpreet-singh/llm-gateway/internal/ratelimit"
 	"github.com/eng-harpreet-singh/llm-gateway/internal/router"
 )
 
 // Handler is the HTTP entry point. It decodes requests, enforces per-tenant
-// rate limits, delegates provider selection to the router, and maps results
-// and typed errors to responses.
+// rate limits, delegates provider selection to the router, records cost to the
+// ledger, and maps results and typed errors to responses.
 type Handler struct {
 	router       *router.Router
 	advisor      *router.Advisor
 	limiter      *ratelimit.Limiter
+	ledger       *ledger.Ledger
 	counter      router.TokenCounter // counts input tokens for the TPM check
+	models       config.Models       // catalogue, used to price a request for the ledger
 	logger       *slog.Logger
 	defaultModel string
 }
 
-
-func NewHandler(r *router.Router, advisor *router.Advisor, limiter *ratelimit.Limiter, counter router.TokenCounter, logger *slog.Logger, defaultModel string) *Handler {
-	return &Handler{router: r, advisor: advisor, limiter: limiter, counter: counter, logger: logger, defaultModel: defaultModel}
+func NewHandler(
+	r *router.Router,
+	advisor *router.Advisor,
+	limiter *ratelimit.Limiter,
+	l *ledger.Ledger,
+	counter router.TokenCounter,
+	models config.Models,
+	logger *slog.Logger,
+	defaultModel string,
+) *Handler {
+	return &Handler{
+		router:       r,
+		advisor:      advisor,
+		limiter:      limiter,
+		ledger:       l,
+		counter:      counter,
+		models:       models,
+		logger:       logger,
+		defaultModel: defaultModel,
+	}
 }
 
 // Routes registers handlers on a stdlib ServeMux (Go 1.22+ method+path patterns).
@@ -132,67 +154,16 @@ func (h *Handler) messages(w http.ResponseWriter, r *http.Request) {
 	// check sees the true running total, not just the estimate.
 	h.limiter.Record(r.Context(), tenant, resp.Usage.InputTokens+resp.Usage.OutputTokens)
 
+	// Record the cost to the ledger (best-effort, synchronous for now).
+	h.ledger.Record(ledger.Entry{
+		TenantID:     tenant,
+		Model:        resp.Model,
+		InputTokens:  resp.Usage.InputTokens,
+		OutputTokens: resp.Usage.OutputTokens,
+		Cost:         h.costFor(resp.Model, resp.Usage.InputTokens, resp.Usage.OutputTokens),
+	})
+
 	writeJSON(w, http.StatusOK, resp)
-}
-
-// adviseRequest is the body for the advisory endpoint: just the prompt. No
-// model is needed — the whole point is that we recommend one.
-type adviseRequest struct {
-	Messages []provider.Message `json:"messages"`
-}
-
-// advise returns a cost/tier recommendation for a prompt WITHOUT calling a
-// model to answer it. The caller (or a UI) uses this to choose a model before
-// committing to the spend. First call in the two-step flow: advise here, then
-// execute via /v1/messages with the chosen model.
-func (h *Handler) advise(w http.ResponseWriter, r *http.Request) {
-	var body adviseRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
-		return
-	}
-	if len(body.Messages) == 0 {
-		writeError(w, http.StatusBadRequest, "messages must not be empty")
-		return
-	}
-
-	// model left empty: advise is about choosing one, not using one
-	req := provider.Request{Messages: body.Messages}
-
-	advice, err := h.advisor.Advise(r.Context(), req)
-	if err != nil {
-		h.logger.Error("advise failed", "error", err)
-		writeError(w, http.StatusInternalServerError, "could not produce advice")
-		return
-	}
-
-	writeJSON(w, http.StatusOK, advice)
-}
-
-// map typed provider errors to HTTP status via errors.Is (not string matching)
-func (h *Handler) handleProviderError(w http.ResponseWriter, err error) {
-	h.logger.Error("provider call failed", "error", err)
-
-	switch {
-	case errors.Is(err, provider.ErrRateLimited):
-		writeError(w, http.StatusTooManyRequests, "upstream rate limited")
-	case errors.Is(err, provider.ErrUpstreamUnavailable):
-		writeError(w, http.StatusBadGateway, "upstream unavailable")
-	case errors.Is(err, provider.ErrInvalidRequest):
-		writeError(w, http.StatusBadRequest, "invalid request to upstream")
-	default:
-		writeError(w, http.StatusInternalServerError, "internal error")
-	}
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
-}
-
-func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
 }
 
 // streamMessages handles the SSE path. It routes to a provider, checks that
@@ -255,7 +226,79 @@ func (h *Handler) streamMessages(w http.ResponseWriter, r *http.Request, req pro
 		}
 		flusher.Flush()
 	}
-	// Note: TPM Record is skipped in v1 streaming — token usage comes in the
-	// final SSE event, which pass-through doesn't parse yet. Reconcile when we
-	// add event translation.
+	// Note: cost + TPM Record are skipped in v1 streaming — token usage comes in
+	// the final SSE event, which pass-through doesn't parse yet. Reconcile when
+	// we add event translation.
+}
+
+// costFor computes total cost (input + output) for a model from the catalogue.
+func (h *Handler) costFor(model string, inputTokens, outputTokens int) float64 {
+	for _, m := range h.models {
+		if m.Model == model {
+			inCost := float64(inputTokens) * m.PricePer1MInput / 1_000_000
+			outCost := float64(outputTokens) * m.PricePer1MOutput / 1_000_000
+			return inCost + outCost
+		}
+	}
+	return 0
+}
+
+// adviseRequest is the body for the advisory endpoint: just the prompt. No
+// model is needed — the whole point is that we recommend one.
+type adviseRequest struct {
+	Messages []provider.Message `json:"messages"`
+}
+
+// advise returns a cost/tier recommendation for a prompt WITHOUT calling a
+// model to answer it. The caller (or a UI) uses this to choose a model before
+// committing to the spend. First call in the two-step flow: advise here, then
+// execute via /v1/messages with the chosen model.
+func (h *Handler) advise(w http.ResponseWriter, r *http.Request) {
+	var body adviseRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if len(body.Messages) == 0 {
+		writeError(w, http.StatusBadRequest, "messages must not be empty")
+		return
+	}
+
+	// model left empty: advise is about choosing one, not using one
+	req := provider.Request{Messages: body.Messages}
+
+	advice, err := h.advisor.Advise(r.Context(), req)
+	if err != nil {
+		h.logger.Error("advise failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "could not produce advice")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, advice)
+}
+
+// map typed provider errors to HTTP status via errors.Is (not string matching)
+func (h *Handler) handleProviderError(w http.ResponseWriter, err error) {
+	h.logger.Error("provider call failed", "error", err)
+
+	switch {
+	case errors.Is(err, provider.ErrRateLimited):
+		writeError(w, http.StatusTooManyRequests, "upstream rate limited")
+	case errors.Is(err, provider.ErrUpstreamUnavailable):
+		writeError(w, http.StatusBadGateway, "upstream unavailable")
+	case errors.Is(err, provider.ErrInvalidRequest):
+		writeError(w, http.StatusBadRequest, "invalid request to upstream")
+	default:
+		writeError(w, http.StatusInternalServerError, "internal error")
+	}
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+func writeError(w http.ResponseWriter, status int, msg string) {
+	writeJSON(w, status, map[string]string{"error": msg})
 }

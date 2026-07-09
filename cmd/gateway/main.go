@@ -21,6 +21,11 @@ import (
 	"github.com/eng-harpreet-singh/llm-gateway/internal/router"
 	"github.com/eng-harpreet-singh/llm-gateway/internal/server"
 	"github.com/eng-harpreet-singh/llm-gateway/internal/token"
+	"fmt"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/eng-harpreet-singh/llm-gateway/internal/ledger"
 )
 
 func main() {
@@ -64,9 +69,23 @@ func run(logger *slog.Logger) error {
 	rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
 	limiter := ratelimit.New(rdb, logger, cfg.RPMLimit, cfg.TPMLimit)
 	// ------------------------------------------
+	
+	// ---- Postgres pool + cost ledger ----
+	// Pool for the cost ledger. We ping once so a bad connection string fails
+	// fast at startup rather than on the first request.
+	
+	pool, err := pgxpool.New(context.Background(), cfg.PostgresURL)
+	if err != nil {
+		return fmt.Errorf("connect postgres: %w", err)
+	}
+	defer pool.Close()          // runs SECOND (LIFO): close pool last
+
+	costLedger := ledger.New(pool, logger)
+	defer costLedger.Close()    // runs FIRST (LIFO): drain ledger before pool closes
+	// --------------------------------------
 
 	// handler now takes the limiter + counter (counter is used for the TPM check)
-	handler := server.NewHandler(rtr, advisor, limiter, counter, logger, cfg.DefaultModel)
+	handler := server.NewHandler(rtr, advisor, limiter, costLedger, counter, cfg.Models, logger, cfg.DefaultModel)
 	srv := server.New(":"+cfg.Port, handler.Routes(), logger, cfg.ShutdownTimeout)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

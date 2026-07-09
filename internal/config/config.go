@@ -19,6 +19,7 @@ const (
 	defaultRedisAddr = "localhost:6379"
 	defaultRPMLimit  = 60      // requests per minute per tenant
 	defaultTPMLimit  = 100_000 // tokens per minute per tenant
+	defaultPostgresURL = "postgres://gateway:gateway@localhost:5432/gateway"
 )
 
 // defaultSignalWords push a prompt to the premium tier when matched.
@@ -29,10 +30,11 @@ var defaultSignalWords = []string{
 // ModelOption is one model the gateway can route to: its tier, provider,
 // the model name the provider expects, and its input price.
 type ModelOption struct {
-	Tier            string
-	Provider        string
-	Model           string
-	PricePer1MInput float64 // price per 1M input tokens; unit set by Currency
+	Tier             string
+	Provider         string
+	Model            string
+	PricePer1MInput  float64
+	PricePer1MOutput float64 // price per 1M output tokens
 }
 
 // Models is the catalogue the advisory layer shows and the router routes to.
@@ -51,6 +53,7 @@ type Config struct {
 	RequestTimeout   time.Duration
 	ShutdownTimeout  time.Duration
 	RedisAddr string
+	PostgresURL string
 	RPMLimit  int
 	TPMLimit  int
 
@@ -83,6 +86,7 @@ func Load() (Config, error) {
 		RedisAddr: getEnv("REDIS_ADDR", defaultRedisAddr),
 		RPMLimit:  getInt("RPM_LIMIT", defaultRPMLimit),
 		TPMLimit:  getInt("TPM_LIMIT", defaultTPMLimit),
+		PostgresURL: getEnv("POSTGRES_URL", defaultPostgresURL),
 	}
 
 	// OpenAI key is required because the local tokenizer and default model
@@ -94,11 +98,11 @@ func Load() (Config, error) {
 	// Curated model catalogue. Two tiers, two providers each. Add more later
 	// by appending entries — no code change needed elsewhere.
 	cfg.Models = Models{
-		{Tier: "affordable", Provider: provider.NameOpenAI, Model: "gpt-4o-mini", PricePer1MInput: 0.15},
-		{Tier: "affordable", Provider: provider.NameAnthropic, Model: "claude-haiku-4-5", PricePer1MInput: 0.25},
-		{Tier: "premium", Provider: provider.NameOpenAI, Model: "gpt-4o", PricePer1MInput: 2.50},
-		{Tier: "premium", Provider: provider.NameAnthropic, Model: "claude-sonnet-4-5", PricePer1MInput: 3.00},
-		{Tier: "local", Provider: provider.NameOllama, Model: "llama3.2", PricePer1MInput: 0.0},
+		{Tier: "affordable", Provider: provider.NameOpenAI, Model: "gpt-4o-mini", PricePer1MInput: 0.15, PricePer1MOutput: 0.60},
+		{Tier: "affordable", Provider: provider.NameAnthropic, Model: "claude-haiku-4-5", PricePer1MInput: 0.25, PricePer1MOutput: 1.25},
+		{Tier: "premium", Provider: provider.NameOpenAI, Model: "gpt-4o", PricePer1MInput: 2.50, PricePer1MOutput: 10.00},
+		{Tier: "premium", Provider: provider.NameAnthropic, Model: "claude-sonnet-4-5", PricePer1MInput: 3.00, PricePer1MOutput: 15.00},
+		{Tier: "local", Provider: provider.NameOllama, Model: "llama3.2", PricePer1MInput: 0.0, PricePer1MOutput: 0.0},
 	}
 
 	return cfg, nil
