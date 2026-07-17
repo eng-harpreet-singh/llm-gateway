@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/eng-harpreet-singh/llm-gateway/internal/config"
 	"github.com/eng-harpreet-singh/llm-gateway/internal/ledger"
@@ -26,8 +27,9 @@ type Handler struct {
 	advisor      *router.Advisor
 	limiter      *ratelimit.Limiter
 	ledger       *ledger.Ledger
-	counter      router.TokenCounter // counts input tokens for the TPM check
-	models       config.Models       // catalogue, used to price a request for the ledger
+	counter      router.TokenCounter
+	models       config.Models
+	currency     string // for cost endpoint responses
 	logger       *slog.Logger
 	defaultModel string
 }
@@ -39,6 +41,7 @@ func NewHandler(
 	l *ledger.Ledger,
 	counter router.TokenCounter,
 	models config.Models,
+	currency string,
 	logger *slog.Logger,
 	defaultModel string,
 ) *Handler {
@@ -49,6 +52,7 @@ func NewHandler(
 		ledger:       l,
 		counter:      counter,
 		models:       models,
+		currency:     currency,
 		logger:       logger,
 		defaultModel: defaultModel,
 	}
@@ -60,6 +64,7 @@ func (h *Handler) Routes() *http.ServeMux {
 	mux.HandleFunc("GET /healthz", h.health)
 	mux.HandleFunc("POST /v1/messages", h.messages)
 	mux.HandleFunc("POST /v1/advise", h.advise) // cost/tier advisory
+	mux.HandleFunc("GET /v1/cost", h.cost)
 	return mux
 }
 
@@ -301,4 +306,47 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+// cost returns a tenant's total spend since an optional ?since= time
+// (RFC3339). Defaults to the last 30 days if not given.
+func (h *Handler) cost(w http.ResponseWriter, r *http.Request) {
+	tenant := r.URL.Query().Get("tenant_id")
+	if tenant == "" {
+		writeError(w, http.StatusBadRequest, "tenant_id query param is required")
+		return
+	}
+
+	// Default window is the last 30 days; override with ?since=RFC3339.
+	since := time.Now().Add(-30 * 24 * time.Hour)
+	if s := r.URL.Query().Get("since"); s != "" {
+		parsed, err := time.Parse(time.RFC3339, s)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "since must be RFC3339, e.g. 2026-06-10T00:00:00Z")
+			return
+		}
+		since = parsed
+	}
+
+	total, err := h.ledger.TenantSpend(r.Context(), tenant, since)
+	if err != nil {
+		h.logger.Error("cost query failed", "tenant", tenant, "error", err)
+		writeError(w, http.StatusInternalServerError, "could not fetch cost")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, costResponse{
+		TenantID:  tenant,
+		Since:     since,
+		TotalCost: total,
+		Currency:  h.currency,
+	})
+}
+
+// costResponse is the body for the cost endpoint.
+type costResponse struct {
+	TenantID  string    `json:"tenant_id"`
+	Since     time.Time `json:"since"`
+	TotalCost float64   `json:"total_cost"`
+	Currency  string    `json:"currency"`
 }

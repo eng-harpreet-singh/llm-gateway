@@ -85,7 +85,7 @@ func run(logger *slog.Logger) error {
 	// --------------------------------------
 
 	// handler now takes the limiter + counter (counter is used for the TPM check)
-	handler := server.NewHandler(rtr, advisor, limiter, costLedger, counter, cfg.Models, logger, cfg.DefaultModel)
+	handler := server.NewHandler(rtr, advisor, limiter, costLedger, counter, cfg.Models, cfg.Currency, logger, cfg.DefaultModel)
 	srv := server.New(":"+cfg.Port, handler.Routes(), logger, cfg.ShutdownTimeout)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
