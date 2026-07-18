@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/eng-harpreet-singh/llm-gateway/internal/config"
 	"github.com/eng-harpreet-singh/llm-gateway/internal/provider"
 )
 
@@ -76,4 +77,29 @@ func providerNameForModel(model string) string {
 	default:
 		return "" // unknown model family
 	}
+}
+
+
+// Fallback returns a same-tier model from a different provider than the given
+// model, or "" if none exists. Used for opt-in fallback when a provider is down.
+func (r *Router) Fallback(models config.Models, failedModel string) string {
+	var failedTier, failedProvider string
+	for _, m := range models {
+		if m.Model == failedModel {
+			failedTier, failedProvider = m.Tier, m.Provider
+			break
+		}
+	}
+	if failedTier == "" {
+		return "" // unknown model, no fallback
+	}
+	// First same-tier model on a different provider that we can route to.
+	for _, m := range models {
+		if m.Tier == failedTier && m.Provider != failedProvider {
+			if _, err := r.Route(provider.Request{Model: m.Model}); err == nil {
+				return m.Model
+			}
+		}
+	}
+	return ""
 }

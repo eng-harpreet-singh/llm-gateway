@@ -4,6 +4,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -77,7 +78,8 @@ type messagesRequest struct {
 	Messages    []provider.Message `json:"messages"`
 	MaxTokens   int                `json:"max_tokens"`
 	Temperature float64            `json:"temperature"`
-	Stream      bool               `json:"stream"` // when true, respond with SSE
+	Stream      bool               `json:"stream"`
+	Fallback    string             `json:"fallback"` // "" / "none" (default) or "same-tier"
 }
 
 func (h *Handler) messages(w http.ResponseWriter, r *http.Request) {
@@ -135,31 +137,34 @@ func (h *Handler) messages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Unknown/unregistered model is a client error, so return 400 rather than
-	// silently routing elsewhere.
-	p, err := h.router.Route(req)
+	// Try the requested model. On a provider-side failure, and only if the
+	// caller opted in, retry once on a same-tier model from another provider.
+	resp, err := h.complete(r.Context(), req)
 	if err != nil {
-		if errors.Is(err, router.ErrNoProvider) {
-			writeError(w, http.StatusBadRequest, err.Error())
+		if body.Fallback == "same-tier" && isRetriable(err) {
+			if alt := h.router.Fallback(h.models, req.Model); alt != "" {
+				h.logger.Warn("primary provider failed, trying fallback", "from", req.Model, "to", alt, "error", err)
+				req.Model = alt
+				resp, err = h.complete(r.Context(), req)
+			}
+		}
+		if err != nil {
+			// Unknown model is a client error (400); provider errors map by type.
+			if errors.Is(err, router.ErrNoProvider) {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			h.handleProviderError(w, err)
 			return
 		}
-		h.logger.Error("routing failed", "error", err)
-		writeError(w, http.StatusInternalServerError, "internal error")
-		return
 	}
 
-	// pass r.Context() so client disconnect/deadline cancels the upstream call
-	resp, err := p.Complete(r.Context(), req)
-	if err != nil {
-		h.handleProviderError(w, err)
-		return
-	}
-
-	// Reconcile: record the ACTUAL tokens used (input + output) so the next
-	// check sees the true running total, not just the estimate.
+	// Reconcile the ACTUAL tokens used (input + output) against the model that
+	// served, so the next check sees the true running total.
 	h.limiter.Record(r.Context(), tenant, resp.Usage.InputTokens+resp.Usage.OutputTokens)
 
-	// Record the cost to the ledger (best-effort, synchronous for now).
+	// Record cost against the model that actually served (resp.Model), so a
+	// fallback bills the fallback model, not the failed one.
 	h.ledger.Record(ledger.Entry{
 		TenantID:     tenant,
 		Model:        resp.Model,
@@ -169,6 +174,22 @@ func (h *Handler) messages(w http.ResponseWriter, r *http.Request) {
 	})
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// complete routes a request and runs the provider call. Shared by the primary
+// attempt and the fallback attempt.
+func (h *Handler) complete(ctx context.Context, req provider.Request) (provider.Response, error) {
+	p, err := h.router.Route(req)
+	if err != nil {
+		return provider.Response{}, err
+	}
+	return p.Complete(ctx, req)
+}
+
+// isRetriable reports whether an error is worth a fallback attempt. Provider
+// outages and rate limits are; a bad request is not (it fails everywhere).
+func isRetriable(err error) bool {
+	return errors.Is(err, provider.ErrUpstreamUnavailable) || errors.Is(err, provider.ErrRateLimited)
 }
 
 // streamMessages handles the SSE path. It routes to a provider, checks that
