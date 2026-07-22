@@ -13,12 +13,19 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+
 	"github.com/eng-harpreet-singh/llm-gateway/internal/config"
 	"github.com/eng-harpreet-singh/llm-gateway/internal/ledger"
 	"github.com/eng-harpreet-singh/llm-gateway/internal/provider"
 	"github.com/eng-harpreet-singh/llm-gateway/internal/ratelimit"
 	"github.com/eng-harpreet-singh/llm-gateway/internal/router"
 )
+
+// tracer emits spans for the server package. One tracer per package is the
+// OTel convention; the name shows up as the instrumentation scope.
+var tracer = otel.Tracer("llm-gateway/server")
 
 // Handler is the HTTP entry point. It decodes requests, enforces per-tenant
 // rate limits, delegates provider selection to the router, records cost to the
@@ -114,9 +121,18 @@ func (h *Handler) messages(w http.ResponseWriter, r *http.Request) {
 		Temperature: body.Temperature,
 	}
 
+	// Root span for the request. Downstream calls use ctx so their spans nest
+	// under this one, giving one trace per request.
+	ctx, span := tracer.Start(r.Context(), "messages")
+	defer span.End()
+	span.SetAttributes(
+		attribute.String("tenant", tenant),
+		attribute.String("model", model),
+	)
+
 	// Count input tokens for the pre-flight TPM check. If counting fails, treat
 	// it as zero input rather than blocking (the check just under-counts once).
-	inputTokens, err := h.counter.CountRequest(r.Context(), req)
+	inputTokens, err := h.counter.CountRequest(ctx, req)
 	if err != nil {
 		h.logger.Warn("token count failed, proceeding", "error", err)
 		inputTokens = 0
@@ -124,7 +140,7 @@ func (h *Handler) messages(w http.ResponseWriter, r *http.Request) {
 
 	// Rate-limit gate: block before spending on the upstream call if the tenant
 	// is over its request or token budget for this minute.
-	if d := h.limiter.Check(r.Context(), tenant, inputTokens); !d.Allowed {
+	if d := h.limiter.Check(ctx, tenant, inputTokens); !d.Allowed {
 		w.Header().Set("Retry-After", strconv.Itoa(int(d.RetryAfter.Seconds())+1))
 		writeError(w, http.StatusTooManyRequests, d.Reason)
 		return
@@ -139,16 +155,18 @@ func (h *Handler) messages(w http.ResponseWriter, r *http.Request) {
 
 	// Try the requested model. On a provider-side failure, and only if the
 	// caller opted in, retry once on a same-tier model from another provider.
-	resp, err := h.complete(r.Context(), req)
+	resp, err := h.complete(ctx, req)
 	if err != nil {
 		if body.Fallback == "same-tier" && isRetriable(err) {
 			if alt := h.router.Fallback(h.models, req.Model); alt != "" {
 				h.logger.Warn("primary provider failed, trying fallback", "from", req.Model, "to", alt, "error", err)
+				span.SetAttributes(attribute.String("fallback.to", alt))
 				req.Model = alt
-				resp, err = h.complete(r.Context(), req)
+				resp, err = h.complete(ctx, req)
 			}
 		}
 		if err != nil {
+			span.RecordError(err)
 			// Unknown model is a client error (400); provider errors map by type.
 			if errors.Is(err, router.ErrNoProvider) {
 				writeError(w, http.StatusBadRequest, err.Error())
@@ -161,7 +179,7 @@ func (h *Handler) messages(w http.ResponseWriter, r *http.Request) {
 
 	// Reconcile the ACTUAL tokens used (input + output) against the model that
 	// served, so the next check sees the true running total.
-	h.limiter.Record(r.Context(), tenant, resp.Usage.InputTokens+resp.Usage.OutputTokens)
+	h.limiter.Record(ctx, tenant, resp.Usage.InputTokens+resp.Usage.OutputTokens)
 
 	// Record cost against the model that actually served (resp.Model), so a
 	// fallback bills the fallback model, not the failed one.
@@ -179,8 +197,14 @@ func (h *Handler) messages(w http.ResponseWriter, r *http.Request) {
 // complete routes a request and runs the provider call. Shared by the primary
 // attempt and the fallback attempt.
 func (h *Handler) complete(ctx context.Context, req provider.Request) (provider.Response, error) {
+	// Child span for the provider call — the part we most want timed.
+	ctx, span := tracer.Start(ctx, "provider.complete")
+	defer span.End()
+	span.SetAttributes(attribute.String("model", req.Model))
+
 	p, err := h.router.Route(req)
 	if err != nil {
+		span.RecordError(err)
 		return provider.Response{}, err
 	}
 	return p.Complete(ctx, req)

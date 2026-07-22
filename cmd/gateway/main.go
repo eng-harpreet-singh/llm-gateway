@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -15,17 +16,16 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/eng-harpreet-singh/llm-gateway/internal/config"
+	"github.com/eng-harpreet-singh/llm-gateway/internal/ledger"
+	"github.com/eng-harpreet-singh/llm-gateway/internal/observability"
 	"github.com/eng-harpreet-singh/llm-gateway/internal/provider"
 	"github.com/eng-harpreet-singh/llm-gateway/internal/ratelimit"
 	"github.com/eng-harpreet-singh/llm-gateway/internal/router"
 	"github.com/eng-harpreet-singh/llm-gateway/internal/server"
 	"github.com/eng-harpreet-singh/llm-gateway/internal/token"
-	"fmt"
-
-	"github.com/jackc/pgx/v5/pgxpool"
-
-	"github.com/eng-harpreet-singh/llm-gateway/internal/ledger"
 )
 
 func main() {
@@ -44,6 +44,13 @@ func main() {
 // run holds the real logic so it can return an error (main can't).
 // Thin main, fallible run — keeps the exit-code path in one place.
 func run(logger *slog.Logger) error {
+	// Tracing: export spans to stdout. Shutdown flushes buffered spans on exit.
+	shutdownTracing, err := observability.InitTracing(context.Background(), "llm-gateway")
+	if err != nil {
+		return fmt.Errorf("init tracing: %w", err)
+	}
+	defer func() { _ = shutdownTracing(context.Background()) }()
+
 	cfg, err := config.Load()
 	if err != nil {
 		return err
@@ -63,28 +70,27 @@ func run(logger *slog.Logger) error {
 	scorer := router.NewHeuristicScorer(cfg.ComplexityThreshold, cfg.SignalWords)
 	advisor := router.NewAdvisor(scorer, counter, cfg.Models, cfg.Currency)
 
-	// ---- NEW: Redis client + rate limiter ----
+	// ---- Redis client + rate limiter ----
 	// Redis backs the per-tenant limiter. The limiter fails open, so a missing
 	// Redis logs and allows rather than crashing the gateway.
 	rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
 	limiter := ratelimit.New(rdb, logger, cfg.RPMLimit, cfg.TPMLimit)
-	// ------------------------------------------
-	
+	// --------------------------------------
+
 	// ---- Postgres pool + cost ledger ----
 	// Pool for the cost ledger. We ping once so a bad connection string fails
 	// fast at startup rather than on the first request.
-	
 	pool, err := pgxpool.New(context.Background(), cfg.PostgresURL)
 	if err != nil {
 		return fmt.Errorf("connect postgres: %w", err)
 	}
-	defer pool.Close()          // runs SECOND (LIFO): close pool last
+	defer pool.Close() // runs SECOND (LIFO): close pool last
 
 	costLedger := ledger.New(pool, logger)
-	defer costLedger.Close()    // runs FIRST (LIFO): drain ledger before pool closes
-	// --------------------------------------
+	defer costLedger.Close() // runs FIRST (LIFO): drain ledger before pool closes
 
-	// handler now takes the limiter + counter (counter is used for the TPM check)
+
+	// handler takes the limiter + counter (counter is used for the TPM check)
 	handler := server.NewHandler(rtr, advisor, limiter, costLedger, counter, cfg.Models, cfg.Currency, logger, cfg.DefaultModel)
 	srv := server.New(":"+cfg.Port, handler.Routes(), logger, cfg.ShutdownTimeout)
 
