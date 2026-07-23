@@ -181,14 +181,22 @@ func (h *Handler) messages(w http.ResponseWriter, r *http.Request) {
 	// served, so the next check sees the true running total.
 	h.limiter.Record(ctx, tenant, resp.Usage.InputTokens+resp.Usage.OutputTokens)
 
-	// Record cost against the model that actually served (resp.Model), so a
-	// fallback bills the fallback model, not the failed one.
+	// Price by req.Model (the catalogue key) — providers return a versioned name
+	// like gpt-4o-mini-2024-07-18 that the catalogue doesn't have. After a
+	// fallback, req.Model is already the model that served.
+	cost := h.costFor(req.Model, resp.Usage.InputTokens, resp.Usage.OutputTokens)
+	span.SetAttributes(
+		attribute.String("served.model", resp.Model),
+		attribute.Float64("cost", cost),
+	)
+
+	// Record against the catalogue key so ledger rows line up with pricing.
 	h.ledger.Record(ledger.Entry{
 		TenantID:     tenant,
-		Model:        resp.Model,
+		Model:        req.Model,
 		InputTokens:  resp.Usage.InputTokens,
 		OutputTokens: resp.Usage.OutputTokens,
-		Cost:         h.costFor(resp.Model, resp.Usage.InputTokens, resp.Usage.OutputTokens),
+		Cost:         cost,
 	})
 
 	writeJSON(w, http.StatusOK, resp)
@@ -197,7 +205,7 @@ func (h *Handler) messages(w http.ResponseWriter, r *http.Request) {
 // complete routes a request and runs the provider call. Shared by the primary
 // attempt and the fallback attempt.
 func (h *Handler) complete(ctx context.Context, req provider.Request) (provider.Response, error) {
-	// Child span for the provider call — the part we most want timed.
+	// Child span for the provider call — the part we most want timed and costed.
 	ctx, span := tracer.Start(ctx, "provider.complete")
 	defer span.End()
 	span.SetAttributes(attribute.String("model", req.Model))
@@ -207,7 +215,24 @@ func (h *Handler) complete(ctx context.Context, req provider.Request) (provider.
 		span.RecordError(err)
 		return provider.Response{}, err
 	}
-	return p.Complete(ctx, req)
+
+	resp, err := p.Complete(ctx, req)
+	if err != nil {
+		span.RecordError(err)
+		return provider.Response{}, err
+	}
+
+	// Usage and cost are known only after the call returns, so tag the span
+	// here, before it ends. Cost uses req.Model, the catalogue key.
+	span.SetAttributes(
+		attribute.String("served.model", resp.Model),
+		attribute.Int("tokens.input", resp.Usage.InputTokens),
+		attribute.Int("tokens.output", resp.Usage.OutputTokens),
+		attribute.Float64("cost", h.costFor(req.Model, resp.Usage.InputTokens, resp.Usage.OutputTokens)),
+		attribute.String("currency", h.currency),
+	)
+
+	return resp, nil
 }
 
 // isRetriable reports whether an error is worth a fallback attempt. Provider
@@ -282,6 +307,7 @@ func (h *Handler) streamMessages(w http.ResponseWriter, r *http.Request, req pro
 }
 
 // costFor computes total cost (input + output) for a model from the catalogue.
+// An unknown model logs loudly — a silent zero here hid a cost bug for weeks.
 func (h *Handler) costFor(model string, inputTokens, outputTokens int) float64 {
 	for _, m := range h.models {
 		if m.Model == model {
@@ -290,6 +316,7 @@ func (h *Handler) costFor(model string, inputTokens, outputTokens int) float64 {
 			return inCost + outCost
 		}
 	}
+	h.logger.Warn("no price for model, recording zero cost", "model", model)
 	return 0
 }
 
